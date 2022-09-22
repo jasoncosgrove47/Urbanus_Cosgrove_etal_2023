@@ -1,0 +1,407 @@
+---
+title: "Analysis of the barcode mouse by scRNASeq"
+output: html_document
+---
+
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 8px;
+}
+h1.title {
+  font-size: 38px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 28px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+</style>
+
+In this study a barcode mouse was treated with tamoxifen to induce barcode generation in situ. Cells that had undergone barcode generation then express GFP. From this mouse LSK cells from the bone marrow were isolated by FACS and split into two distinct fractions GFP positive cells, and GFP negative cells. 
+
+
+Cells were sequenced on the 10X Genomics platform, a droplet based approach to isolate single-cells for sequencing. As described in AlJahani et al (2018): "Droplet-based single-cell gene expression approaches use microfluidic chips to isolate single cells along with single beads in oil-encapsulated droplets, using microfluidics to bring oil, beads, and cell suspensions together in such a way that each droplet contains at most a single cell.20 The beads are coated with DNA oligos that are composed of a poly(T) tail at the 3′ end for the capture of cellular mRNAs, and at the 5′ end both a cell barcode that is identical for every oligo coating an individual bead and a library of individual unique molecular identifier (UMI) barcodes of high diversity, each UMI different for every oligo on the bead. The transcripts from each individual cell captured and labeled by the DNA oligos attached to a bead within the droplets are reverse transcribed, amplified with PCR, and sequenced using a high-throughput platform, after breaking and pooling droplet contents. The resulting sequences are aligned to a reference genome in order to annotate each transcript with its gene name. The cell barcodes on the aligned sequences allow for the computational linking of each gene transcript to its cell of origin. The number of copies of individual gene transcripts expressed in each individual cell is tallied using the UMIs, allowing the assembly of digital gene expression matrices (DGEs), which are tables of cell barcodes and gene counts."
+
+
+# Step 1: Prepare the workspace, loading the appropriate packages and reading the data in with associated metadata
+ 
+```{r initialiseWorkspace, message = FALSE, warning = FALSE}  
+
+#clear the workspace
+rm(list=ls())
+#set the working directory and load in required libraries
+setwd("/Users/jasoncosgrove/Dropbox (Team_Perie)/Jason/Experiments/Dry_Lab/JCB6_VDJMouse/Expt1_leila/Publication")
+library(Seurat)
+library(scran)
+library(org.Mm.eg.db)
+library(clustree)
+library(destiny)
+library(SingleCellExperiment)
+library(scater)
+library(scales)
+library(dplyr)
+
+source("/Users/jasoncosgrove/Dropbox (Team_Perie)/BCM paper/resubmission nature com/Jason/code/Figure2_helpermethods.R")
+
+#set the seed for the analysis so that it is reproducible
+set.seed(12345)
+  
+``` 
+
+
+
+
+
+create a seurat objet 
+```{r loadData, message = FALSE, warning = FALSE}  
+
+# This method takes the outputs of the cellRanger pipeline and converts the data into a seurat object.
+# For more details see the helpermethods.R file
+lsks <- generateSeuratObject()
+
+```
+
+
+# Step 2: Data QC 
+
+To assess the quality of the data we assess the library sizes, numbers of genes expressed and mitochondrial content per cell. Cells with very low library sizes are typically because of poor capture quality pontentially due to cell death, premature rupture, or capture of random mRNA escaping from cells, consequently cells with low library sizes are also filtered out from downstream analyses. 
+
+Another important QC metric is mitochondrial content. As discussed in AlJanahi et al (2018) "High numbers of mitochondrial transcripts are indicators of cell stress, and therefore cells with elevated mitochondrial gene expression are often not included in the analysis, because most experiments will not benefit from clustering cells based on stress levels. However, just as with number of transcripts, this parameter is highly dependent on the tissue type and the questions being investigated."
+
+
+  
+```{r dataQC, message = FALSE, warning = FALSE}  
+
+#find the percentage of mitochondrial genes
+lsks<- Seurat::PercentageFeatureSet(object = lsks, pattern = "^mt-", col.name = "percent.mt")
+
+#plot key quality control metrics
+VlnPlot(lsks, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# Filter outlier cells based on visual inspection of the above plot
+# we shouldnt have a lower bound for mitochondrial because we know that LT-HSCs have low
+# mitochondrial content relative to other cells. 
+lsks <- subset(lsks, subset = nFeature_RNA > 1500
+               & percent.mt < 10 & percent.mt > 1)
+
+
+print(paste("dataset contains" , nrow(lsks),"genes after filtering"), sep = " " )
+print(paste("dataset contains" , ncol(lsks),"cells after filtering"), sep = " " )
+
+```
+
+
+
+# Step 2: Data normalisation 
+When analyzing sequencing data, normalization to eliminate batch effects is crucial if multiple sequencing runs and between 10X runs are to be compared with each other. These batch effects can be caused by often unavoidable technical variations such as the duration samples were kept on ice, number of freeze-thaw cycles, method of RNA isolation, sequencing depth, etc.
+
+An additional consideration is that droplet-based sequencing in addition consists of thousands of individual cell experiments, hence cell-specific biases must also be considered when normalizing, in order to be able to compare the expression of one cell to another.  A notable cell-specific bias is caused by mRNA capture efficiency, where the mRNA molecules are not captured by the bead at the same proportion in all droplets. As individual cells are not all of the same type a key consideration is how to retain cell to cell variability while eliminating technical noise. 
+
+To normalise our data we use sctransform.  Briefly, in this approach the normalized values are Pearson residuals from regularized negative binomial regression, where cellular sequencing depth is used as a covariate. To scale the data, we center it around zero for each gene. The scaled data is used just for generating visualizations of the data, while the normalized matrix is used for statistical comparisons such as differential expression.  In their preprint they show that an unconstrained negative binomial model may overfit scRNA-seq data, and overcome this by pooling information across genes with similar abundances to obtain stable parameter estimates.
+
+
+
+```{r Normalisation, message = FALSE, warning = FALSE}  
+
+# To normalise the data we use two different approaches, seurats default method (results stored in RNA), 
+# and the scTransform method (results stored in SCT). 
+lsks <- FindVariableFeatures(lsks, verbose = FALSE)
+lsks <- NormalizeData(lsks, verbose = FALSE)
+lsks <- ScaleData(lsks, verbose = FALSE)
+lsks <- SCTransform(object = lsks, verbose = FALSE,variable.features.n = 2500, conserve.memory = F,return.only.var.genes = F)
+
+
+sct.res <- checkNormalisation("SCT", lsks)
+rna.res <- checkNormalisation("RNA", lsks)
+
+#plot the effects of the normalisations
+plot(rna.res$p1)
+plot(sct.res$p2)
+plot(rna.res$p2)
+
+
+
+```
+
+From our PCA plots we observe 3 main features: how much of the variance we retain following normalisation, the size of the dots which indicates the numbers of genes expressed per cell, and also the colour of the dots, which indicates the number of UMIs per cell. While the SCT normalisation retains less of the variance in principle component once we can see that it can better deal with eliminating technical noise compared to the default seurat approach. We can see that the effect of library size is not completed eliminated however we can expect some variation due to intrinsic biological variability. Later in the analysis when we visualise the data using PCA and non-linear equivalents we can see if there are any outlier cells that are due to technical artefacts and can revisit our QC and normalisation accordingly.  
+
+
+# Step 3: Addressing the batch effect in our data
+Plotting the average expression of all genes, shows that many genes are enriched in the GFP pos group but never the opposite. This is indicative of a batch effect that has arisen from samples being run separately.
+
+
+```{r batchEffect, message = FALSE, warning = FALSE}  
+
+# Looking at our QC metrics, we see the datasets are fairly similar
+VlnPlot(lsks, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "batch")
+
+#However if you look more closely at the data you will see that there is a clear batch effect. 
+#if you look at the data you will see that there is evidence of a batch effect in which many genes are upregulated in GFP
+avg <- data.frame(log1p(AverageExpression(lsks, group.by = "batch")$SCT))
+avg$ratio <- avg$GFPpos / avg$GFPneg
+avg <- avg[avg$GFPpos > 0.5 &  avg$GFPneg > 0.5, ]
+avg.ordered <- avg[order(avg$ratio,decreasing = T),]
+p1 <- ggplot(avg, aes(GFPpos, GFPneg)) + geom_point() + ggtitle("barcode mouse")
+p1 <- LabelPoints(plot = p1, points = rownames(avg.ordered)[1:10], repel = TRUE,size = 7,fontface = "bold",colour = "dark red")
+
+tiff("/Users/jasoncosgrove/Desktop/Plot2.tif", res = 300,width = 7, height = 7, units = "in")
+print(p1 + theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")))
+dev.off()
+
+
+```
+
+
+To remove the batch effect in our data we use our batch variable in metadata stating whether a cell is GFP positive or negative and then regress this out using a negative binomial approach.
+```{r correctBatch, message = FALSE, warning = FALSE}  
+#run the regression
+lsks <- ScaleData(object = lsks, vars.to.regress = "batch", model.use = "negbinom",
+                  do.center = T, do.scale = T,assay = "SCT")
+
+#visualise the impact of the batch transformation on our data
+batch.genes <- rownames(avg.ordered)[1:5]
+
+#Lets see the raw data for 5 genes that are affected by the batch effect
+VlnPlot(lsks, features = batch.genes, group.by = "batch", slot = "counts",assay="SCT")
+
+#Now lets look at the effect of normalisation on the expression of these genes
+VlnPlot(lsks, features = batch.genes, group.by = "batch", slot = "data",assay="SCT")
+
+#Finally we visualise how well our batch correction approach is working
+VlnPlot(lsks, features = batch.genes, group.by = "batch", slot = "scale.data",assay="SCT")
+
+```
+
+
+
+# Dimensionality reduction and data visualisation
+
+We perform dimensionality reduction on 2500 variably expressed genes using both principle component analysis, an approach to find the linear combination of genes that are the greatest source of variance in the data.We visualize our data using the non-linear dimensionality reduction technique UMAP. This approach is analogous to PCA, but can also identify non-linear patterns in the data. The goal of the algorithm is to learn the underlying manifold of the data in order to place similar cells together in low-dimensional space. UMAP is preferable to t-SNE as it is faster to compute, and does not require tuning of the perplexity parameter.
+```{r dataVisualisation, message = FALSE, warning = FALSE}  
+
+lsks <- RunPCA(lsks, npcs = 50, verbose = FALSE)
+ElbowPlot(lsks, ndims = 30)
+lsks <- RunUMAP(lsks, reduction = "pca", dims = 1:15) 
+
+#visualising the data we see we have an outlier population
+DimPlot(lsks, reduction = "umap", group.by = "batch")
+
+```
+
+#Outlier detection
+
+From our data visualisation we see a clear outlier population. Lets generate clusters to isolate this group and look at QC metrics and marker genes to see whether we should exclude this group from further analysis or not. 
+
+This analysis shows that the outlier group is infact B-cell progenitors, and not MPP4 cells so we exclude them from downstream analyses
+```{r outlierAssessment, message = FALSE, warning = FALSE}  
+lsks <- FindNeighbors(object = lsks, dims = 1:15, verbose = FALSE)
+lsks <- FindClusters(lsks, dims.use = 1:15, print.output = FALSE,resolution=0.1,force.recalc= T)
+DimPlot(object = lsks, label = F,reduction = "umap", pt.size = 2) 
+
+#we find a clear outlier population, could this population be a technical artefact. 
+VlnPlot(lsks, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+#lets also look for markers of this cluster to give us an idea of what cell type it is
+markers <- FindMarkers(lsks,ident.1 = "3",test.use = "LR")
+head(markers)
+
+
+#remove the B cells from downstream analyses
+non.bcells <- colnames(lsks)[lsks@meta.data$SCT_snn_res.0.1 != "3"]
+lsks <- lsks[,non.bcells]
+
+
+```
+
+
+re-run the data visualisation on the filtered data. This time we use a lower number of PCs as input into the UMAP algorithm to better highlight the major aspects of variability within this cell population
+```{r dataVisualisation2, message = FALSE, warning = FALSE}  
+#use low number of dimensions for visualisations
+lsks <- RunUMAP(lsks, reduction = "pca", dims = 1:10,min.dist = 2, spread = 1)
+DimPlot(lsks, reduction = "umap", group.by = "batch", pt.size = 2)
+```
+
+
+
+#Data clustering
+To look at key cell subsets within the progenitor compartment we perform clustering using the Louvain algorithm. As 8 clusters is the most robust result when varying the resolution parameter we choose this number of clusters for downstream analyses.
+
+```{r dataClustering, message = FALSE, warning = FALSE}  
+lsks <- FindNeighbors(object = lsks, dims = 1:10, verbose = FALSE,reduction = "pca")
+for(i in seq(from=0.1, to=1, by=0.1)){
+  lsks <- FindClusters(object = lsks, resolution = i, algorithm = 2, verbose = F)
+}
+
+tiff("/Users/jasoncosgrove/Desktop/clustree.tif", res = 300,width = 7, height = 9, units = "in")
+print(clustree(lsks, prefix = "SCT_snn_res.",assay = "SCT"))
+dev.off()
+
+
+#lets choose a value of the resolution parameter that gives the most stable results
+lsks <- FindClusters(lsks, dims.use = 1:10, print.output = FALSE,resolution=0.5,force.recalc= T,algorithm = 2, reduction = "pca")
+
+lsks <- RenameIdents(lsks, '0' = '0', '1' = '1', '2' = '2','3' = '3','4' = '4', '5' = '5','6' = '6', '7' = '3')
+
+
+tiff("/Users/jasoncosgrove/Desktop/clusters.tif", res = 300,width = 7, height = 7, units = "in")
+DimPlot(object = lsks, label = F,reduction = "umap", pt.size = 2) 
+dev.off()
+
+#lets find marker genes for our key clusters
+cluster.markers <- FindAllMarkers(lsks, test.use = "LR",only.pos = TRUE)
+x <-cluster.markers %>% group_by(cluster) %>% top_n(3, avg_logFC)
+print(tbl_df(x), n=40)
+
+
+write.csv(cluster.markers, file = "/Users/jasoncosgrove/Desktop/ClusterMarkers.csv")
+
+
+FeaturePlot(lsks,c("Cd48","Ly6a"),ncol = 1,
+            min.cutoff = "q5", max.cutoff = "q95",cols = c("black","green"))
+
+```
+
+
+```{r clusterAnnotation, message = FALSE, warning = FALSE}  
+
+#calculate the expression of key gene-signatures so that we can annotate our clusters
+gene.set.names <- c("WilsonMolO","MPP2_Pietras", "MPP3_Pietras" , "MPP4_Pietras","Pia_HSC","Pia_MPP1","Pia_MPP2","Pia_MPP3","Pia_MPP4","Pia_MPP5")
+lsks <- geneSetAnnotation(lsks, gene.set.names)
+
+#see the expression of our signatures in our different clusters
+tiff("/Users/jasoncosgrove/Desktop/wilson.tif", res = 300,width = 7, height = 4, units = "in")
+VlnPlot(lsks,features = c("WilsonMolO1"),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green")) +NoLegend() #cluster 2 is LTHSCs
+dev.off()
+
+tiff("/Users/jasoncosgrove/Desktop/mpp2.tif", res = 300,width = 7, height = 4, units = "in")
+VlnPlot(lsks,features = c("Pia_MPP21"),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"))+NoLegend()  #clusters3 and 7 is LTHSCs
+dev.off()
+
+tiff("/Users/jasoncosgrove/Desktop/mpp3.tif", res = 300,width = 7, height = 4, units = "in")
+VlnPlot(lsks,features = c("Pia_MPP31"),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"))+NoLegend()  #cluster 6 is LTHSCs
+dev.off()
+
+tiff("/Users/jasoncosgrove/Desktop/mpp4.tif", res = 300,width = 7, height = 4, units = "in")
+VlnPlot(lsks,features = c("Pia_MPP41"),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"))+NoLegend()  #cluster 1 is LTHSCs
+dev.off()
+
+tiff("/Users/jasoncosgrove/Desktop/mpp5.tif", res = 300,width = 7, height = 4, units = "in")
+VlnPlot(lsks,features = c("Pia_MPP51"),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"))+NoLegend()  #cluster 1 is LTHSCs
+dev.off()
+
+VlnPlot(lsks,features = c("Pia_HSC1","Pia_MPP11","Pia_MPP21",
+                          "Pia_MPP31","Pia_MPP41","Pia_MPP51"),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"))+ labs(title = NULL)
+
+tiff("/Users/jasoncosgrove/Desktop/sigs.tif", res = 300,width = 8, height = 12, units = "in")
+VlnPlot(lsks,features = c("WilsonMolO1",'Pia_MPP21','Pia_MPP31','Pia_MPP41','Pia_MPP51'),pt.size = 0,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"),ncol = 1,stack = T,flip = T, fill.by = 'ident') + NoLegend()
+
+dev.off()
+
+#lets rename our clusters
+new.cluster.ids <- c("MPP3/4", "HSC/MPP4/5", "HSC/MPP5", "MPP2", "MPP2/MPP3", "HSC/MPP1", 
+    "MPP3", "MPP2")
+
+names(new.cluster.ids) <- levels(lsks)
+lsks <- RenameIdents(lsks, new.cluster.ids)
+
+
+```
+
+
+
+```{r validateAnnotation, message = FALSE, warning = FALSE}  
+
+
+#as we see from this plot we get good agreement between the two approaches
+tiff("/Users/jasoncosgrove/Desktop/umap.tif", res = 300,width = 4, height = 4, units = "in")
+DimPlot(lsks,cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"),pt.size = 1.0) + NoLegend()
+dev.off()
+
+
+
+levels(lsks) <-   c(  "LTHSC" , "MPP2" ,  "MPP3",  "MPP4",  "not_annotated"  ) 
+
+features.to.plot <- c("Cd48", "Flt3", "Procr","WilsonMolO1",
+                      "MPP2_Pietras1","MPP3_Pietras1","MPP4_Pietras1")
+
+ 
+for(i in 1:length(features.to.plot)){
+  
+  tiff("Plot3.tiff", width = 6.5, height = 3, units = 'in', res = 300)
+  VlnPlot(lsks, features = c(features.to.plot[7]),pt.size = 0, cols = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"))
+  dev.off()
+}
+
+DimPlot(lsks,cells.highlight = colnames(lsks)[lsks@meta.data$batch == "GFPpos"],
+         cols.highlight = c( "green4"), pt.size = 1, sizes.highlight = 1.5) + NoLegend()
+
+
+
+
+```
+
+
+# Cluster enrichment
+
+```{r clusterEnrichment, message = FALSE, warning = FALSE}  
+
+#generate a barplot showing the distribution of cells within the clusters
+counts <- table(Idents(lsks), lsks@meta.data$batch)
+prop.df <- data.frame(cbind(data.frame(prop.table(counts[,1])),data.frame(prop.table(counts[,2]))))
+colnames(prop.df) <- c("gfp.neg", "gfp.pos")
+
+
+tiff("/users/jasoncosgrove/Desktop/Barplot.tiff", res = 300,width = 4, height = 5, units = 'in')
+par(lwd=3)
+barplot(as.matrix(prop.df),col = c("light grey", "cornflowerblue", "darkolivegreen3","orange", "plum","dark red","dark green"), axes = F)
+dev.off()
+
+#From our barplot it looks like the GFPpos are enriched in the MPP3 cluster lets test this using a Fishers exact test
+cluster_of_interest <- "MPP3/4"
+lsks@meta.data$clusters <- lsks@active.ident
+(input_for_Fisher <- matrix(c(ncol(lsks[, lsks@meta.data$clusters == cluster_of_interest &
+                                          lsks@meta.data$batch == "GFPpos"]), 
+                       ncol(lsks[, lsks@meta.data$clusters != cluster_of_interest &
+                                          lsks@meta.data$batch == "GFPpos"]), 
+                       ncol(lsks[, lsks@meta.data$clusters == cluster_of_interest &
+                                          lsks@meta.data$batch == "GFPneg"]), 
+                       ncol(lsks[, lsks@meta.data$clusters != cluster_of_interest &
+                                          lsks@meta.data$batch == "GFPneg"])),
+                     nrow = 2,
+                     dimnames = list(cellType = c("Selected_cluster", "Others"),
+                                     state = c("GFPpos", "GFPneg"))))
+
+fisher.test(input_for_Fisher, alternative = "two.sided")
+
+
+```
+
+As we can see from this analysis the GFP postive cells are distributed throughout the LSK compartment in a similar way to non-GFP cells. However, the GFP positive cells are enriched within the MPP3 compartment as assessed using a Fishers exact test.  
+
+# References
+
+1. Butler, Andrew et al. Integrating Single-Cell Transcriptomic Data across Different Conditions, Technologies, and Species. Nature Biotechnology (2018)
+
+2. Lun A, Risso D (2018). SingleCellExperiment: S4 Classes for Single Cell Data. R package version 1.4.0.
+
+3. AlJanahi, Aisha A., Mark Danielsen, and Cynthia E. Dunbar. ‘An Introduction to the Analysis of Single-Cell RNA-Sequencing Data’. Molecular Therapy - Methods & Clinical Development (2018)
+
