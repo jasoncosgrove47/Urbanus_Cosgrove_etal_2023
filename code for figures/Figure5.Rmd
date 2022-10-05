@@ -87,10 +87,6 @@ set.seed(12345)
 
 ```{r load_data, message = FALSE, warning = FALSE,eval = F}  
 
-#6 month timepoint, we have 2 datasets from the same mouse, GFP positive LSKs and GFP negative LSKs
-exp1 <- Read10X(data.dir= "inputs/exp1/GFPpos/")
-exp1.gfpneg <- Read10X(data.dir= "inputs/exp1/GFPneg/") 
-
 #12 month timepoint we have 2 mice that were processed on the same day
 exp2.454 <- Read10X(data.dir= "inputs/exp2/454/") 
 exp2.534 <- Read10X(data.dir= "inputs/exp2/534/") 
@@ -114,12 +110,6 @@ Another important QC metric is mitochondrial content. As discussed in AlJanahi e
 
 ```{r makeSeuratObjects, message = FALSE, warning = FALSE,eval = F}  
 
-#create seurat objects for each of the datasets
-#exp1.sobj <- CreateSeuratObject(counts = exp1, min.cells = 200, 
-#                                min.features = 500,project = "mo06_gfp")
-
-#exp1.nogfp.sobj <- CreateSeuratObject(counts = exp1.gfpneg, min.cells = 200, 
-#                                      min.features = 500,project = "mo06_nogfp")
 
 exp2.454.sobj <- CreateSeuratObject(counts = exp2.454, min.cells = 200, 
                                     min.features = 500,project = "mo12_m454")
@@ -140,10 +130,6 @@ exp6.m2.sobj <- CreateSeuratObject(counts = exp6.m2, min.cells = 200,
                                 min.features = 500,project = "mo06_m2")
 
 
-# annotate the mitcohondrial percentage, remove cells with poor QC critera, 
-# and remove pseudogenes and ribosomal genes
-#exp1.sobj <- preProcessDataset(exp1.sobj,30000,4)
-#exp1.nogfp.sobj <- preProcessDataset(exp1.nogfp.sobj,30000,4)
 
 
 exp2.454.sobj <- preProcessDataset(exp2.454.sobj,50000,15)
@@ -426,8 +412,6 @@ In the approach below we employ a logistic regression framework to determine dif
 
 
 
-
-
 DefaultAssay(dataset.integrated) <- "RNA" #make sure you work with the RNA slot when you are making statistical comparisons
 
 
@@ -439,11 +423,12 @@ x %>%
     top_n(n = 5, wt = avg_log2FC) -> top10
 
 
-dataset.integrated <- ScaleData(dataset.integrated,assay = "RNA")
-DoHeatmap(dataset.integrated, features = top10$gene,assay = "RNA") + NoLegend()
+top10.filtered <- top10[as.numeric(top10$cluster) > 6,]
 
 
-write.csv(x,"outputs/cluster_markers.csv")
+DotPlot(dataset.integrated, features = unique(top10$gene)) + RotatedAxis()
+
+
 
 ```
 
@@ -540,6 +525,17 @@ FeaturePlot(dataset.integrated,c("WilsonMolO1",
                                           "MPP2_Pietras1",
                                           "MPP3_Pietras1"  ,
                                           "MPP4_Pietras1"),min.cutoff = "q5",max.cutoff = "q95", cols  = c("grey95","black"))
+
+
+
+
+
+FeaturePlot(dataset.integrated,c("WilsonMolO1",
+                                   "Pia_MPP11",
+                                         "Pia_MPP21",
+                                         "Pia_MPP31",
+                                         "Pia_MPP41",
+                                         "Pia_MPP51"),min.cutoff = "q5",max.cutoff = "q95", cols  = c("grey95","black"),ncol = 3)
 
 
 
@@ -838,9 +834,16 @@ Idents(dataset.integrated) <- "timepoint"
 dataset.integrated@active.assay <- "RNA"
 x <- FindAllMarkers(dataset.integrated, test.use = "LR",only.pos = TRUE, assay = "RNA",logfc.threshold = 0.2)
 
+write.csv(x,"/Users/jasoncosgrove/Desktop/S13_clusters_for_diffages.csv")
 
 
-write.csv(x,"outputs/HSPC_DEGS_across_ages.csv")
+x.filtered <- x[x$cluster == "mo18",]
+
+dataset.integrated <- AddModuleScore(dataset.integrated,features =list(x.filtered$gene), name = "aged_sig")
+
+VlnPlot(dataset.integrated,"aged_sig1",cols = cluster.cols,group.by = "cluster",pt.size = 0)
+
+
 
 
 x %>%
@@ -849,8 +852,8 @@ x %>%
 
 
 
-DoHeatmap(dataset.integrated, features = top10$gene,assay = "RNA",disp.min = -1.5, disp.max = 1.5) + NoLegend()  + scale_fill_gradientn(colors = c("white","grey50", "black"))
 
+DotPlot(dataset.integrated, features = unique(top10$gene)) + RotatedAxis()
 
 
 
@@ -917,35 +920,7 @@ panel.background = element_blank(), axis.line = element_line(colour = "black",si
 
 
 
-
-
-## Step 22. Identify surface markers for cluster 6 (MPP3/MPP5)
-
-we perform gene expression as above. But here we filter on genes that are associated with receptor signalling and adhesion, these classes of molecules are on the cell surface and may have good antibodies already. Just bear in mind that in the GO terms there are probably a number of genes that are not on the cell surface. 
-
-```{r surfacemarkers_cluster, message = FALSE, warning = FALSE} 
-#### What markers could we use to purify the cells in the new cell state? ###
-Idents(dataset.integrated) <- "cluster"
-
-age.markers <- FindMarkers(dataset.integrated,ident.1 = c("7","8","9","10"),only.pos = TRUE,test.use = "LR",logfc.threshold = 0.2,assay = "RNA")
-
-
-load("/Users/jasoncosgrove/Dropbox (Team_Perie)/Jason/Experiments/Dry_Lab/JCB4_metabolism_bioinformatics_pipeline/genesets/geneset_Robjects/GO.Rda")
-markers.filtered <- c(GO.sets['GO:0007166 cell surface receptor signaling pathway'][[1]],
-                      GO.sets["GO:0007155 cell adhesion"][[1]])
-putative.markers <- intersect(rownames(age.markers),markers.filtered)
-
-
-dataset.integrated <- ScaleData(dataset.integrated, assay = "RNA")
-DoHeatmap(dataset.integrated, features = putative.markers[1:20],assay = "RNA") + NoLegend()
-
-
-
-
-```
-
-
-## Step 23. Check Lineage Markers and Gene Expression Across Ages
+## Step 22. Check Lineage Markers and Gene Expression Across Ages
 
 to make sure our interpretatio of the clustering is not biased by having so many aged LSKs we perform the same analysis but only on the young HSPCs
 ```{r MarkersAcrossAges, message = FALSE, warning = FALSE} 
@@ -1067,7 +1042,7 @@ dev.off()
 ```
 
 
-## Step 24. Pathway Analysis
+## Step 23. Pathway Analysis
 
 Perform pathway analysis using the enrichR R package
 see https://cran.r-project.org/web/packages/enrichR/vignettes/enrichR.html
@@ -1188,7 +1163,7 @@ write.csv(pathways,"/Users/jasoncosgrove/Desktop/HSPC_pathways_12vs18.csv")
 
 
 
-## Step 25. Diffusion Map
+## Step 24. Diffusion Map
 Do a diffusion map trajectory analysis using the destiny R package. More information about this method can be found at the following links:
 
 https://academic.oup.com/bioinformatics/article/31/18/2989/241305?login=true
@@ -1234,14 +1209,6 @@ new.cols <- c("darkolivegreen3","light grey","cornflowerblue","red","plum",
 
   
 
-tiff("/Users/jasoncosgrove/Desktop/psuedotime.tiff", width = 9, height = 6, units = 'in', res = 300)
-ggplot(df, 
-       aes(x = pseudotime_dpt_ranked, 
-           y = cluster, colour = cluster)) + geom_quasirandom(groupOnX = FALSE) +
-    scale_color_manual(values = new.cols) + theme_classic() +
-    xlab("DPT") + ylab("Timepoint") +
-    ggtitle("Cells ordered by pseudotime")
-dev.off()
 
 ggplot(df, 
        aes(x = pseudotime_dpt_ranked, 
@@ -1253,10 +1220,11 @@ ggplot(df,
 
 ggplot(df, 
        aes(x = pseudotime_dpt_ranked, 
-           y = cluster, colour = marker)) + geom_quasirandom(groupOnX = FALSE) +
-    scale_colour_gradientn(colors = c("grey10","green")) + theme_classic() +
+           y = cluster, colour = cluster)) + geom_quasirandom(groupOnX = FALSE) +
+    scale_color_manual(values = new.cols) + theme_classic() +
     xlab("DPT") + ylab("Timepoint") +
     ggtitle("Cells ordered by pseudotime")
+
 
 
 ggplot(df, 
@@ -1283,4 +1251,4 @@ DimPlot(object = sobj, label = F,reduction = "dmap", pt.size = 0.5,dims = c(1,2)
 
 # Final Summary
 
-In this experiment we analysed LSKs from mice that were 6 (10X V2),12 (10X V3) and 18 months (10X V3) old. Data were integrated and underwent semi-supervised clustering and annotation. We then assessed clusters annd gene expression patterns that were upregulated at the different ages and modelled differentiation using a diffusion map based approach. 
+In this experiment we analysed LSKs from mice that were 6.5 ,12 (10X V3) and 19 months (10X V3) old. Data were integrated and underwent semi-supervised clustering and annotation. We then assessed clusters annd gene expression patterns that were upregulated at the different ages and modelled differentiation using a diffusion map based approach. 
