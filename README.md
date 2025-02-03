@@ -1,4 +1,4 @@
-# Urbanus-Cosgrove-et-al-DRAG-mouse
+# Urbanus & Cosgrove et al (2023)
 
 This github project contains the link to the raw data, the filtered data and the software to support the publication of Urbanus and Cosgrove et al (2023). Within this repository you will find R scripts and data to analyse 10x scRNAseq experiments. We also provide supporting material including lists of differentially expressed genes and pathways. Any queries about the software or supporting documents can be made to Jason Cosgrove (jason.cosgrove47@gmail.com)
 
