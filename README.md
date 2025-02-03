@@ -1,3 +1,9 @@
 # Urbanus-Cosgrove-et-al-DRAG-mouse
 
-This repository contains source data and analysis code for the manuscript entitled: DRAG in situ barcoding reveals an increased number of HSPCs contributing to myelopoiesis with age
+This github project contains the link to the raw data, the filtered data and the software to support the publication of Urbanus and Cosgrove et al (2023). Within this repository you will find R scripts and data to analyse 10x scRNAseq experiments. We also provide supporting material including lists of differentially expressed genes and pathways. Any queries about the software or supporting documents can be made to Jason Cosgrove (jason.cosgrove47@gmail.com)
+
+Creative Commons License
+This work is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
+
+
+Ageing is associated with changes in the cellular composition of the immune system. During ageing, hematopoietic stem and progenitor cells (HSPCs) that produce immune cells are thought to decline in their regenerative capacity. However, HSPC function has been mostly assessed using transplantation assays, and it remains unclear how HSPCs age in the native bone marrow niche. To address this issue, we present an in situ single cell lineage tracing technology to quantify the clonal composition and cell production of single cells in their native niche. Our results demonstrate that a pool of HSPCs with unequal output maintains myelopoiesis through overlapping waves of cell production throughout adult life. During ageing, the increased frequency of myeloid cells is explained by greater numbers of HSPCs contributing to myelopoiesis rather than the increased myeloid output of individual HSPCs. Strikingly, the myeloid output of HSPCs remains constant over time despite accumulating significant transcriptomic changes throughout adulthood. Together, these results show that, unlike emergency myelopoiesis post-transplantation, aged HSPCs in their native microenvironment do not functionally decline in their regenerative capacity.
